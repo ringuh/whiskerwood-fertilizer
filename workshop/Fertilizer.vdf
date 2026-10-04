@@ -1,0 +1,27 @@
+"workshopitem"
+{
+	"appid"		"2489330"
+	"publishedfileid"		"0"
+	"contentfolder"		"E:\modding\whiskerwood-fertilizer\workshop\content"
+	"previewfile"		"E:\modding\whiskerwood-fertilizer\docs\screenshot.png"
+	"title"		"Fertilizer - Fertilize all nearby fields of the same crop"
+	"description"		"[b]Stop opening every field to switch Fertilizer on.[/b]
+
+Adds a button to the crop field window: [i]Fertilize all Wheat within 30 tiles[/i]. One click turns Fertilizer on for every nearby field growing the same crop.
+
+[h2]Features[/h2]
+[list]
+[*]Button in the crop field window; its label names the field's crop and the range, and follows the seed you pick
+[*]Same crop only: other crops are left alone, and the button is greyed out on fallow fields
+[*]Only switches Fertilizer on, never off; fields that already have it are skipped
+[*]Setting [i]Fertilizer - range (tiles)[/i] in the Mods menu: 5 to 100 tiles (default 30)
+[*]Uses the game's own Fertilizer switch, the same as the toggle in the window
+[*]Works while paused, and does nothing in the background: it only reacts to your clicks
+[/list]
+
+[h2]Source[/h2]
+[url=https://github.com/ringuh/whiskerwood-fertilizer]GitHub[/url]
+
+Created using the [url=https://github.com/Whiskerwood-Modding/Whiskerwood-Project]Whiskerwood modkit[/url]."
+	"changenote"		"First release."
+}
