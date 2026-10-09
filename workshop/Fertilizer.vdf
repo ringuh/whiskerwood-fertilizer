@@ -12,7 +12,8 @@ Adds a button to the crop field window: [i]Fertilize all Wheat within 30 tiles[/
 [h2]Features[/h2]
 [list]
 [*]Button in the crop field window; its label names the field's crop and the range, and follows the seed you pick
-[*]Same crop only: other crops are left alone, and the button is greyed out on fallow fields
+[*]Same crop only: other crops are left alone
+[*]On a fallow field: [i]Fallow + derock + fertilize all within N tiles[/i] sets every nearby field (any crop) to Fallow and turns Remove Rocks and Fertilizer on
 [*]Only switches Fertilizer on, never off; fields that already have it are skipped
 [*]Setting [i]Fertilizer - range (tiles)[/i] in the Mods menu: 5 to 100 tiles (default 30)
 [*]Uses the game's own Fertilizer switch, the same as the toggle in the window
@@ -23,5 +24,5 @@ Adds a button to the crop field window: [i]Fertilize all Wheat within 30 tiles[/
 [url=https://github.com/ringuh/whiskerwood-fertilizer]GitHub[/url]
 
 Created using the [url=https://github.com/Whiskerwood-Modding/Whiskerwood-Project]Whiskerwood modkit[/url]."
-	"changenote"		"First release."
+	"changenote"		"1.2: The button now also appears in a new game, not only after loading a save."
 }

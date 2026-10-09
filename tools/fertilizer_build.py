@@ -1,16 +1,10 @@
 """Generates the Blueprint paste text (T3D) for the Fertilizer mod into tools/out/.
 Usage: python tools/fertilizer_build.py   (needs the modkit's jmap, see t3d.py)
 
-Assets (/Game/Mods/Fertilizer/):
-  BP_Startup       Actor. Registers the mod option Fertilizer_Range.
-  WBP_FieldHelper  Widget BP, parent UI_FarmFieldDetails. Hidden copy of the crop field window used to read
-                   (ComputeState) and set (SetFertilizerActive) any field; both are private to that class.
-  WBP_FertButton   Widget BP, designer only: Button "Btn" -> TextBlock "Label" (both Is Variable).
-  WBP_ClickWaiter  Widget BP, empty. Waits ~0.1 s after a click (UI ticks while paused) and calls
-                   BP_MapLoad.OnClickCheck. NOTE: its "On Click Check" call node pastes with a broken
-                   Target type; delete it and re-create it by dragging from the Owner variable.
-  BP_MapLoad       Actor. Puts the button into every crop field window and does the fertilizing.
-Log lines need Saved\\mods\\Fertilizer\\debug.txt (any text).
+Assets (/Game/Mods/Fertilizer/): BP_Startup (Actor), WBP_FieldHelper (Widget BP, parent UI_FarmFieldDetails),
+WBP_FertButton (Widget BP, designer only: a Button named Btn with a text), BP_MapLoad (Actor).
+See the BP_MapLoad section for how the button gets into the game's crop field window.
+Log lines need Saved\\mods\\FertilizerConfig\\debug.txt (any text).
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
@@ -190,8 +184,9 @@ reg = api_call(g, 'RegisterModOptions', 600, 0, name='Reg',
                optionId=OPT_ID,
                optionDisplayName='Fertilizer - range (tiles)',
                DefaultValue=DEFAULT,
-               optionDescription='The crop field button turns Fertilizer on for every field with the same crop '
-                                 'within this many tiles of the selected field. Fields that already have it on are left alone.')
+               optionDescription='Range of the crop field window button, counted from the selected field. On a planted field it turns '
+                                 'Fertilizer on for every field with the same crop; on a fallow field it sets every field to Fallow '
+                                 'and turns Remove Rocks and Fertilizer on.')
 link(vals['Array'], reg['Values'])
 ex(bp, reg)
 write('BP_Startup', g)
@@ -206,23 +201,28 @@ ss = g.setv('State', STRUCT(STATE_S), 500, 0, name='SetState'); link(cs['ReturnV
 evA = g.custom_event('ApplyFertilizer', [], 0, 500)
 sf = g.call(FIELDV + ':SetFertilizerActive', 'FertilizerOn', 300, 500, bNewActive='true')
 ex(evA, sf)
+evK = g.custom_event('ApplyRocks', [], 0, 800)
+sk = g.call(FIELDV + ':SetRemovingRocksActive', 'RemoveRocksOn', 300, 800, bNewActive='true')
+ex(evK, sk)
+evF = g.custom_event('ApplyFallow', [], 0, 1100)
+sfw = g.call(FIELDV + ':SetActiveSeeds', 'SeedFallow', 300, 1100, seeds='fallow')
+ex(evF, sfw)
 write('WBP_FieldHelper', g)
 
-# =========================================================================== BP_MapLoad (Actor)
+# =========================================================================== BP_MapLoad (Actor) — v3: button injected into the crop field window
 # How it works (no tick, no polling):
-#  - A world left click (InputKey LeftMouseButton, released, not consumed, also while paused) or a click on any
-#    button inside the open crop field window shows WBP_ClickWaiter, which ~0.1 s later calls OnClickCheck.
-#  - OnClickCheck finds the visible crop field window (UI_FarmFieldDetails, not our hidden helper). The game makes
-#    a new window for every field opened; for a new one it finds the VerticalBox under "contents"
-#    (NaviUi.FindDecendentsOfClasses) and AddChild(WBP_FertButton), centres it, and binds the window's own
-#    buttons (seed choices etc.). Then (new or same window) the label is set from the field's crop.
-#  - Button click: Sel = window.Context (the FarmPlot_C tile), helper reads its crop (None / fallow = nothing to do),
-#    then every FarmPlot_C within Range tiles (rootPosition X/Y distance, checked first) with the same crop and
-#    fertilizer off gets SetFertilizerActive(true) via the hidden helper (one change per field: its other tiles
-#    then read on).
+#  - A world left-click (InputKey LeftMouseButton, released, not consumed) arms a one-shot 0.3 s timer
+#    (not re-armed while running). OnClickCheck looks for a visible crop field window (UI_FarmFieldDetails,
+#    not our hidden helper). If it is a window we haven't put our button into yet, it finds a UserWidget
+#    inside that window (outer of outer == window), climbs GetParent to the window's root panel and
+#    AddChild(our WBP_FertButton). The button then lives inside the window and closes with it.
+#  - Button click: Sel = window.Context (the FarmPlot_C tile), helper reads its crop, then every FarmPlot_C
+#    within Range tiles (rootPosition X/Y distance, checked first) with the same crop and fertilizer off
+#    gets SetFertilizerActive(true) via the hidden helper (one change per field: its other tiles then read on).
 # Variables: Debug (Boolean), Helper (WBP_FieldHelper ref), FertButton (WBP_FertButton ref),
 #            Waiter (WBP_ClickWaiter ref), Win (User Widget ref), Injected (User Widget ref), Target (Panel Widget ref),
-#            Sel (Actor ref), SelRoot (Vector), SelSeeds (Name), Range (Integer), Changed (Integer)
+#            Sel (Actor ref), SelRoot (Vector), SelSeeds (Name), Range (Integer), Changed (Integer),
+#            Ready (Boolean), Tries (Integer)   <- new in 1.2 (setup guard)
 BTN = M + 'WBP_FertButton'
 BTN_CLS = "/Script/UMG.WidgetBlueprintGeneratedClass'%s.%s_C'" % (BTN, BTN.split('/')[-1])
 BTN_T = T('object', obj=BTN_CLS)
@@ -299,8 +299,26 @@ api = modapi(g, 200, -1850, name='BindApi')
 evL = g.custom_event('OnLoaded', [], 0, -1600)
 b1 = bind(g, MAPLOAD, api['ReturnValue'], API, 'onLoadingFinished', '/Script/SystemCore', 'ModAPI_OnEvent__DelegateSignature', evL, 400, -2000, 'BindLoaded'); ex(bp, b1)
 
-# ---- OnLoaded: Debug, input, helper, button
-rdf = api_call(g, 'ReadModTextFile', 300, -1600, name='ReadDebugFile', modName=MOD, Filename='debug.txt'); ex(evL, rdf)
+# ---- Setup guard (1.2): a NEW game doesn't deliver onLoadingFinished to us (it fires before BP_MapLoad's
+#      BeginPlay / not at all), so setup runs from BeginPlay too. Both BeginPlay (after the bind) and OnLoaded
+#      enter the same guard: Ready -> nothing; no player controller yet -> one-shot 1 s timer back into
+#      OnLoaded (max 10 tries); else Ready = true and set up once.
+gr = g.branch(-300, -1300, 'BrReady'); link(g.get('Ready', BOOL, -450, -1150, name='ReadyGet')['Ready'], gr['Condition'])
+ex(b1, gr); ex(evL, gr)
+pcG = g.call('/Script/Engine.GameplayStatics:GetPlayerController', 'PCGuard', -300, -1000)
+gp = g.branch(-50, -1300, 'BrHavePC'); link(is_valid(g, pcG['ReturnValue'], -150, -1000, 'PCGuardValid'), gp['Condition']); ex(gr, gp, 'else')
+srd = g.setv('Ready', BOOL, 150, -1300, value='true', name='SetReady'); ex(gp, srd)
+tg = g.get('Tries', INT, 0, -800, name='TriesGet')
+tl = g.call(KML + ':Less_IntInt', 'TriesLeft', 150, -800, B='10'); link(tg['Tries'], tl['A'])
+bt = g.branch(150, -1000, 'BrRetry'); link(tl['ReturnValue'], bt['Condition']); ex(gp, bt, 'else')
+ta = g.call(KML + ':Add_IntInt', 'TriesPlus', 300, -850, B='1'); link(tg['Tries'], ta['A'])
+stt = g.setv('Tries', INT, 400, -1000, name='SetTries'); link(ta['ReturnValue'], stt['Tries']); ex(bt, stt)
+tmr = g.call(KSL + ':K2_SetTimer', 'RetrySetup', 650, -1000, FunctionName='OnLoaded', Time='1.000000', bLooping='false')
+link(self_node(g, 500, -850, 'MeTimer')['self'], tmr['Object']); ex(stt, tmr)
+
+# ---- Setup: Debug, input, helper, button
+# debug switch: Saved\mods\FertilizerConfig\debug.txt (ReadModTextFile adds .txt itself)
+rdf = api_call(g, 'ReadModTextFile', 300, -1600, name='ReadDebugFile', modName=MOD + 'Config', Filename='debug'); ex(srd, rdf)
 dfe = g.call(KSTR + ':IsEmpty', 'DebugFileEmpty', 550, -1450); link(rdf['ReturnValue'], dfe['InString'])
 dfn = g.call(KML + ':Not_PreBool', 'DebugFileThere', 750, -1450); link(dfe['ReturnValue'], dfn['A'])
 sdb = g.setv('Debug', BOOL, 650, -1600, name='SetDebug'); link(dfn['ReturnValue'], sdb['Debug']); ex(rdf, sdb)
@@ -434,9 +452,13 @@ bkL = struct_node(g, 'Break', STATE_S, ['activeSeeds'], 5450, 1200, 'BreakWin');
 optL = api_call(g, 'ReadModOptionValue', 5500, 1000, name='ReadRangeL', optionId=OPT_ID, fallbackValue=DEFAULT); ex(rsL, optL)
 hasL0 = g.call(KML + ':NotEqual_NameName', 'NotNoneL', 5700, 1300, B='None'); link(bkL['activeSeeds'], hasL0['A'])
 hasL1 = g.call(KML + ':NotEqual_NameName', 'NotFallowL', 5700, 1450, B='fallow'); link(bkL['activeSeeds'], hasL1['A'])
-hasL = g.call(KML + ':BooleanAND', 'HasCropL', 5900, 1350); link(hasL0['ReturnValue'], hasL['A']); link(hasL1['ReturnValue'], hasL['B'])
+hasL = hasL0  # v8: fallow is a valid selection (fallow action)
 bL = g.branch(5800, 1000, 'BrCropL'); link(hasL['ReturnValue'], bL['Condition']); ex(optL, bL)
-txtL = concat(g, 6000, 1300, 'Fertilize all ', crop_word(g, bkL['activeSeeds'], 5600, 1500, 'L'), ' within ', optL['ReturnValue'], ' tiles')
+txtC = concat(g, 6000, 1300, 'Fertilize all ', crop_word(g, bkL['activeSeeds'], 5600, 1500, 'L'), ' within ', optL['ReturnValue'], ' tiles')
+txtF = concat(g, 6000, 1450, 'Fallow + derock + fertilize all within ', optL['ReturnValue'], ' tiles')
+isFL = g.call(KML + ':EqualEqual_NameName', 'IsFallowL', 5700, 1600, B='fallow'); link(bkL['activeSeeds'], isFL['A'])
+selL = g.call(KML + ':SelectString', 'PickLabel', 6300, 1350); link(txtF, selL['A']); link(txtC, selL['B']); link(isFL['ReturnValue'], selL['bPickA'])
+txtL = selL['ReturnValue']
 sl1 = set_label(g, bL, 'then', txtL, 6000, 1000, 'Ready')
 en1 = set_enabled(g, sl1, 'then', True, 6400, 1000, 'On')
 nc = g.call(KSTR + ':Concat_StrStr', 'NoCropText', 6000, 1700, A='No crop chosen', B='')
@@ -469,9 +491,9 @@ bk1 = struct_node(g, 'Break', STATE_S, ['activeSeeds'], 2700, 1200, 'BreakSel');
 sseed = g.setv('SelSeeds', NAME, 2750, 1000, name='SetSelSeeds'); link(bk1['activeSeeds'], sseed['SelSeeds']); ex(rs1, sseed)
 hasC0 = g.call(KML + ':NotEqual_NameName', 'NotNone', 3000, 1200, B='None'); link(bk1['activeSeeds'], hasC0['A'])
 hasC1 = g.call(KML + ':NotEqual_NameName', 'NotFallow', 3000, 1350, B='fallow'); link(bk1['activeSeeds'], hasC1['A'])
-hasCrop = g.call(KML + ':BooleanAND', 'HasCrop', 3200, 1250); link(hasC0['ReturnValue'], hasCrop['A']); link(hasC1['ReturnValue'], hasCrop['B'])
+hasCrop = hasC0  # v8: fallow selected = fallow action
 bC = g.branch(3000, 1000, 'BrHasCrop'); link(hasCrop['ReturnValue'], bC['Condition']); ex(sseed, bC)
-lNc = log(g, 3300, 1400, msg='Fertilizer: selected field has no crop (fallow), nothing to do', name='LogNoCrop'); ex(bC, lNc, 'else')
+lNc = log(g, 3300, 1400, msg='Fertilizer: selected field has no seed choice, nothing to do', name='LogNoCrop'); ex(bC, lNc, 'else')
 lS = log(g, 3300, 1000, msg_pin=concat(g, 3250, 1200, 'Fertilizer: button pressed, crop=', tostr(g, 'Conv_NameToString', bk1['activeSeeds'], 3100, 1300, 'SelSeedStr'),
                                          ' range=', tostr(g, 'Conv_IntToString', ri['ReturnValue'], 3100, 1400, 'RangeStr')), name='LogPressed')
 ex(bC, lS)
@@ -502,17 +524,39 @@ sc2 = g.call(KSL + ':SetObjectPropertyByName', 'HelperToTile', 5100, 1000, Prope
 link(hg3['Helper'], sc2['Object']); link(P, sc2['Value']); ex(bR, sc2)
 rs2 = g.bpcall(HELPER, 'ReadState', [], name='ReadTile', x=5400, y=1000); link(hg3['Helper'], rs2['self']); ex(sc2, rs2)
 st2 = helper_get(g, 'State', STATE_T, hg3['Helper'], 5700, 1150, 'TileState')
-bk2 = struct_node(g, 'Break', STATE_S, ['activeSeeds', 'bFertilizerActive'], 5950, 1150, 'BreakTile'); link(st2['State'], bk2['FarmFieldUIState'])
+bk2 = struct_node(g, 'Break', STATE_S, ['activeSeeds', 'bFertilizerActive', 'bRemovingRocksActive'], 5950, 1150, 'BreakTile'); link(st2['State'], bk2['FarmFieldUIState'])
 ssg = g.get('SelSeeds', NAME, 5950, 1350, name='SelSeedsGet')
 same = g.call(KML + ':EqualEqual_NameName', 'SameCrop', 6200, 1200); link(bk2['activeSeeds'], same['A']); link(ssg['SelSeeds'], same['B'])
 off = g.call(KML + ':Not_PreBool', 'FertOff', 6200, 1350); link(bk2['bFertilizerActive'], off['A'])
-doIt = g.call(KML + ':BooleanAND', 'Fertilize', 6400, 1250); link(same['ReturnValue'], doIt['A']); link(off['ReturnValue'], doIt['B'])
-bA = g.branch(5700, 1000, 'BrFertilize'); link(doIt['ReturnValue'], bA['Condition']); ex(rs2, bA)
-ap = g.bpcall(HELPER, 'ApplyFertilizer', [], name='DoFertilize', x=6000, y=1000); link(hg3['Helper'], ap['self']); ex(bA, ap)
-cg2 = g.get('Changed', INT, 6200, 850, name='ChangedGet')
-inc = g.call(KML + ':Add_IntInt', 'ChangedPlus1', 6400, 850, B='1'); link(cg2['Changed'], inc['A'])
-sci = g.setv('Changed', INT, 6300, 1000, name='CountChange'); link(inc['ReturnValue'], sci['Changed']); ex(ap, sci)
-lF = log(g, 6700, 1000, msg_pin=concat(g, 6650, 1500, 'Fertilizer:   fertilizer on: field at ', tostr(g, 'Conv_IntVectorToString', fb2['rootPosition'], 6500, 1600, 'TileRootStr'),
+doC = g.call(KML + ':BooleanAND', 'FertilizeCrop', 6400, 1250); link(same['ReturnValue'], doC['A']); link(off['ReturnValue'], doC['B'])
+# fallow mode (the selected field is fallow): every field in range, whatever it grows
+fm = g.call(KML + ':EqualEqual_NameName', 'FallowMode', 6200, 1500, B='fallow'); link(ssg['SelSeeds'], fm['A'])
+rocksOff = g.call(KML + ':Not_PreBool', 'RocksOff', 6200, 1650); link(bk2['bRemovingRocksActive'], rocksOff['A'])
+notFal = g.call(KML + ':NotEqual_NameName', 'TileNotFallow', 6200, 1800, B='fallow'); link(bk2['activeSeeds'], notFal['A'])
+hasSeed = g.call(KML + ':NotEqual_NameName', 'TileHasSeed', 6200, 1950, B='None'); link(bk2['activeSeeds'], hasSeed['A'])
+n1 = g.call(KML + ':BooleanOR', 'NeedsA', 6400, 1700); link(off['ReturnValue'], n1['A']); link(rocksOff['ReturnValue'], n1['B'])
+n2 = g.call(KML + ':BooleanOR', 'NeedsB', 6600, 1750); link(n1['ReturnValue'], n2['A']); link(notFal['ReturnValue'], n2['B'])
+n3 = g.call(KML + ':BooleanAND', 'NeedsFallowWork', 6800, 1700); link(n2['ReturnValue'], n3['A']); link(hasSeed['ReturnValue'], n3['B'])
+doF = g.call(KML + ':BooleanAND', 'DoFallowWork', 7000, 1600); link(fm['ReturnValue'], doF['A']); link(n3['ReturnValue'], doF['B'])
+nfm = g.call(KML + ':Not_PreBool', 'CropMode', 6400, 1400); link(fm['ReturnValue'], nfm['A'])
+doCm = g.call(KML + ':BooleanAND', 'DoCropWork', 6600, 1300); link(nfm['ReturnValue'], doCm['A']); link(doC['ReturnValue'], doCm['B'])
+doIt = g.call(KML + ':BooleanOR', 'DoWork', 7200, 1400); link(doCm['ReturnValue'], doIt['A']); link(doF['ReturnValue'], doIt['B'])
+bA = g.branch(5700, 1000, 'BrDoWork'); link(doIt['ReturnValue'], bA['Condition']); ex(rs2, bA)
+# 1) fertilizer if off
+bFz = g.branch(5950, 1000, 'BrFertOff'); link(off['ReturnValue'], bFz['Condition']); ex(bA, bFz)
+ap = g.bpcall(HELPER, 'ApplyFertilizer', [], name='DoFertilize', x=6150, y=900); link(hg3['Helper'], ap['self']); ex(bFz, ap)
+# 2) fallow mode: remove rocks if off
+rk = g.call(KML + ':BooleanAND', 'RocksNeeded', 6350, 1150); link(fm['ReturnValue'], rk['A']); link(rocksOff['ReturnValue'], rk['B'])
+bRk = g.branch(6350, 1000, 'BrRocks'); link(rk['ReturnValue'], bRk['Condition']); ex(ap, bRk); ex(bFz, bRk, 'else')
+apR = g.bpcall(HELPER, 'ApplyRocks', [], name='DoRemoveRocks', x=6550, y=900); link(hg3['Helper'], apR['self']); ex(bRk, apR)
+# 3) fallow mode: set the seed to Fallow
+fw = g.call(KML + ':BooleanAND', 'FallowNeeded', 6750, 1150); link(fm['ReturnValue'], fw['A']); link(notFal['ReturnValue'], fw['B'])
+bFw = g.branch(6750, 1000, 'BrFallow'); link(fw['ReturnValue'], bFw['Condition']); ex(apR, bFw); ex(bRk, bFw, 'else')
+apF = g.bpcall(HELPER, 'ApplyFallow', [], name='DoFallow', x=6950, y=900); link(hg3['Helper'], apF['self']); ex(bFw, apF)
+cg2 = g.get('Changed', INT, 7200, 850, name='ChangedGet')
+inc = g.call(KML + ':Add_IntInt', 'ChangedPlus1', 7400, 850, B='1'); link(cg2['Changed'], inc['A'])
+sci = g.setv('Changed', INT, 7200, 1000, name='CountChange'); link(inc['ReturnValue'], sci['Changed']); ex(apF, sci); ex(bFw, sci, 'else')
+lF = log(g, 7500, 1000, msg_pin=concat(g, 7450, 1500, 'Fertilizer:   changed field at ', tostr(g, 'Conv_IntVectorToString', fb2['rootPosition'], 6500, 1600, 'TileRootStr'),
                                           ' distance ', tostr(g, 'Conv_DoubleToString', dist['ReturnValue'], 6500, 1700, 'DistStr')), name='LogFertilized')
 ex(sci, lF)
 cgd = g.get('Changed', INT, 4400, 700, name='ChangedGetDone')
@@ -521,8 +565,12 @@ ex(lpF, lD, 'Completed')
 
 # show the result on the button
 ssgD = g.get('SelSeeds', NAME, 4900, 800, name='SelSeedsGetD')
-txtD = concat(g, 5100, 800, 'Done: ', tostr(g, 'Conv_IntToString', cgd['Changed'], 4900, 950, 'DoneCount'), ' more ',
-              crop_word(g, ssgD['SelSeeds'], 4900, 1100, 'D'), ' fields fertilized')
+dc = tostr(g, 'Conv_IntToString', cgd['Changed'], 4900, 950, 'DoneCount')
+txtDC = concat(g, 5100, 800, 'Done: ', dc, ' more ', crop_word(g, ssgD['SelSeeds'], 4900, 1100, 'D'), ' fields fertilized')
+txtDF = concat(g, 5100, 950, 'Done: ', dc, ' fields set to fallow, derocked and fertilized')
+isFD = g.call(KML + ':EqualEqual_NameName', 'IsFallowD', 4900, 1250, B='fallow'); link(ssgD['SelSeeds'], isFD['A'])
+selD = g.call(KML + ':SelectString', 'PickDone', 5400, 900); link(txtDF, selD['A']); link(txtDC, selD['B']); link(isFD['ReturnValue'], selD['bPickA'])
+txtD = selD['ReturnValue']
 slD = set_label(g, lD, 'then', txtD, 5300, 600, 'Done')
 
 write('BP_MapLoad', g)
